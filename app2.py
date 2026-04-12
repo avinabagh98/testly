@@ -1,0 +1,157 @@
+import streamlit as st
+import pandas as pd
+import pdfplumber
+import re
+import io
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+
+# --- CORE LOGIC (From previous steps) ---
+
+def to_decimal_exact(val):
+    if val is None or pd.isna(val):
+        return Decimal('0.00')
+    s = str(val).replace(',', '').strip().replace('–', '-').replace('—', '-')
+    if s.startswith('(') and s.endswith(')'):
+        s = '-' + s[1:-1]
+    if s in ["", "-", "None", "."]:
+        return Decimal('0.00')
+    try:
+        d = Decimal(s)
+        return d.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return Decimal('0.00')
+
+def extract_from_pdf_bytes(pdf_file):
+    data = []
+    num_pattern = r'\(?[-–—]?\d(?:[\d,.]*\d)?\)?'
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if not text: continue
+            for line in text.split('\n'):
+                match = re.match(r'^(\d{3})\b', line.strip())
+                if match:
+                    code = match.group(1)
+                    found_nums = re.findall(num_pattern, line.strip())
+                    clean_nums = [n for n in found_nums if n.strip('()') != code]
+                    if len(clean_nums) >= 2:
+                        data.append({
+                            'Code': code,
+                            'PDF_Current': to_decimal_exact(clean_nums[1]),
+                            'PDF_Previous': to_decimal_exact(clean_nums[-1])
+                        })
+    return pd.DataFrame(data)
+
+def extract_from_excel_bytes(excel_file):
+    df_raw = pd.read_excel(excel_file)
+    header_idx = None
+    for i, row in df_raw.iterrows():
+        if row.astype(str).str.contains('Code No', case=False).any():
+            header_idx = i
+            break
+    df = pd.read_excel(excel_file, skiprows=header_idx + 1) if header_idx is not None else df_raw
+    
+    cols = df.columns
+    code_col = next((c for c in cols if 'Code' in str(c)), None)
+    curr_col = next((c for c in cols if 'Current Year' in str(c)), None)
+    prev_col = next((c for c in cols if 'Previous Year' in str(c)), None)
+
+    processed = []
+    for _, row in df.iterrows():
+        raw_code = str(row[code_col]).split('.')[0].strip()
+        if raw_code.isdigit() and len(raw_code) == 3:
+            processed.append({
+                'Code': raw_code,
+                'Excel_Current': to_decimal_exact(row[curr_col]),
+                'Excel_Previous': to_decimal_exact(row[prev_col])
+            })
+    return pd.DataFrame(processed)
+
+# --- GOOGLE DRIVE INTEGRATION ---
+
+def get_gdrive_service():
+    # Load credentials from streamlit secrets or local file
+    creds = service_account.Credentials.from_service_account_file(
+        'service_account.json', 
+        scopes=['https://www.googleapis.com/auth/drive.readonly']
+    )
+    return build('drive', 'v3', credentials=creds)
+
+def list_files_in_folder(service, folder_id):
+    query = f"'{folder_id}' in parents and trashed = false"
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    return results.get('files', [])
+
+def download_file(service, file_id):
+    request = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while done is False:
+        status, done = downloader.next_chunk()
+    fh.seek(0)
+    return fh
+
+# --- STREAMLIT UI ---
+
+st.set_page_config(page_title="Balance Sheet Auditor", layout="wide")
+st.title("📊 Balance Sheet Precision Auditor")
+
+# Folder ID input (or hardcode it)
+FOLDER_ID = st.sidebar.text_input("Google Drive Folder ID")
+
+if FOLDER_ID:
+    try:
+        drive_service = get_gdrive_service()
+        files = list_files_in_folder(drive_service, FOLDER_ID)
+        
+        if not files:
+            st.warning("No files found in this folder.")
+        else:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                excel_file_info = st.selectbox("Select Excel/CSV File", files, format_func=lambda x: x['name'])
+            with col2:
+                pdf_file_info = st.selectbox("Select PDF File", files, format_func=lambda x: x['name'])
+
+            if st.button("Run Comparison"):
+                with st.spinner("Fetching files and analyzing..."):
+                    # Download files into memory
+                    excel_data = download_file(drive_service, excel_file_info['id'])
+                    pdf_data = download_file(drive_service, pdf_file_info['id'])
+
+                    # Process
+                    df_excel = extract_from_excel_bytes(excel_data)
+                    df_pdf = extract_from_pdf_bytes(pdf_data)
+
+                    # Align and Compare
+                    comparison = pd.merge(df_excel, df_pdf, on='Code', how='outer').fillna(Decimal('0.00'))
+                    comparison['Current_Match'] = comparison['Excel_Current'] == comparison['PDF_Current']
+                    comparison['Previous_Match'] = comparison['Excel_Previous'] == comparison['PDF_Previous']
+                    comparison['Status'] = (comparison['Current_Match'] & comparison['Previous_Match']).map({True: '✅ MATCH', False: '❌ MISMATCH'})
+
+                    # Display results
+                    st.subheader("Comparison Result")
+                    st.dataframe(comparison.style.map(
+                        lambda x: 'background-color: #ffcccc' if x == '❌ MISMATCH' else '', subset=['Status']
+                    ), use_container_width=True)
+
+                    # Download Report
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        comparison.to_excel(writer, index=False)
+                    st.download_button(
+                        label="Download Excel Report",
+                        data=output.getvalue(),
+                        file_name="BS_Comparison_Report.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+
+    except Exception as e:
+        st.error(f"Error connecting to Google Drive: {e}")
+else:
+    st.info("Please enter a Google Drive Folder ID in the sidebar to begin.")

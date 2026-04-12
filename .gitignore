@@ -1,0 +1,82 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+pip-wheel-metadata/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Pytest
+.pytest_cache/
+.cache
+
+# Coverage reports
+.coverage
+.coverage.*
+.cache
+.coverage.xml
+htmlcov/
+coverage.xml
+
+# MyPy
+.mypy_cache/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Database files
+*.sqlite3
+*.db
+
+# Secrets and credentials (do NOT commit service account keys)
+service_account.json
+service-account.json
+credentials.json
+*.pem
+*.key
+*.p12
+.secrets/
+secret.json
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+*.pyc
+*.pyo
+*.pyd
