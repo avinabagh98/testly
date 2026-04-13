@@ -72,13 +72,33 @@ def extract_from_excel_bytes(excel_file):
 
 # --- GOOGLE DRIVE INTEGRATION ---
 
+
 def get_gdrive_service():
-    # Load credentials from streamlit secrets or local file
-    creds = service_account.Credentials.from_service_account_file(
-        'service_account.json', 
-        scopes=['https://www.googleapis.com/auth/drive.readonly']
-    )
+    # 1. First, try to load from Streamlit Cloud Secrets (Production)
+    if "gcp_service_account" in st.secrets:
+        # We convert the secrets back into a dictionary format the library understands
+        service_account_info = dict(st.secrets["gcp_service_account"])
+        # We need to fix the newline characters in the private key if they got mangled
+        service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
+        
+        creds = service_account.Credentials.from_service_account_info(
+            service_account_info, 
+            scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+    
+    # 2. Fallback for Local Testing (if you have the physical file)
+    else:
+        import os
+        if os.path.exists('service_account.json'):
+            creds = service_account.Credentials.from_service_account_file(
+                'service_account.json', 
+                scopes=['https://www.googleapis.com/auth/drive.readonly']
+            )
+        else:
+            raise FileNotFoundError("Could not find Service Account credentials in Secrets or local file.")
+
     return build('drive', 'v3', credentials=creds)
+
 
 def list_files_in_folder(service, folder_id):
     query = f"'{folder_id}' in parents and trashed = false"
