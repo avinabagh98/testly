@@ -158,7 +158,7 @@ if FOLDER_ID:
                     st.subheader("Comparison Result")
                     st.dataframe(comparison.style.map(
                         lambda x: 'background-color: #ffcccc' if x == '❌ MISMATCH' else '', subset=['Status']
-                    ), use_container_width=True)
+                    ), width=True)
 
                     # Download Report
                     output = io.BytesIO()
