@@ -158,7 +158,7 @@ if FOLDER_ID:
                     st.subheader("Comparison Result")
                     st.dataframe(comparison.style.map(
                         lambda x: 'background-color: #ffcccc' if x == '❌ MISMATCH' else '', subset=['Status']
-                    ), width=True)
+                    ), use_container_width=True)
 
                     # Download Report
                     output = io.BytesIO()
@@ -172,6 +172,6 @@ if FOLDER_ID:
                     )
 
     except Exception as e:
-        st.error(f"Error connecting to Google Drive: {e}")
+        st.error(f"Error: {e}")
 else:
     st.info("Please enter a Google Drive Folder ID in the sidebar to begin.")

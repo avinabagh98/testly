@@ -23,6 +23,8 @@ pip-wheel-metadata/
 *.egg-info/
 .installed.cfg
 *.egg
+public/
+.claude/
 
 # Virtual environments
 .env
