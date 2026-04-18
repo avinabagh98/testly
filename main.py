@@ -7,10 +7,7 @@ from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-import sys
-sys.path.insert(0, 'Features')
-import trial
-import ledger
+
 
 # --- CORE LOGIC (From previous steps) ---
 
@@ -28,7 +25,7 @@ def to_decimal_exact(val):
     except (InvalidOperation, ValueError):
         return Decimal('0.00')
 
-def extract_from_pdf_bytes(pdf_file):
+def extract_from_pdf_bytes(pdf_file,state):
     data = []
     num_pattern = r'\(?[-–—]?\d(?:[\d,.]*\d)?\)?'
     with pdfplumber.open(pdf_file) as pdf:
@@ -44,12 +41,12 @@ def extract_from_pdf_bytes(pdf_file):
                     if len(clean_nums) >= 2:
                         data.append({
                             'Code': code,
-                            'PDF_Current': to_decimal_exact(clean_nums[1]),
-                            'PDF_Previous': to_decimal_exact(clean_nums[-1])
+                            f'{state}_Current': to_decimal_exact(clean_nums[1]),
+                            f'{state}_Previous': to_decimal_exact(clean_nums[-1])
                         })
     return pd.DataFrame(data)
 
-def extract_from_excel_bytes(excel_file):
+def extract_from_excel_bytes(excel_file, state ):
     df_raw = pd.read_excel(excel_file)
     header_idx = None
     for i, row in df_raw.iterrows():
@@ -69,10 +66,47 @@ def extract_from_excel_bytes(excel_file):
         if raw_code.isdigit() and len(raw_code) == 3:
             processed.append({
                 'Code': raw_code,
-                'Excel_Current': to_decimal_exact(row[curr_col]),
-                'Excel_Previous': to_decimal_exact(row[prev_col])
+                f'{state}_Current': to_decimal_exact(row[curr_col]),
+                f'{state}_Previous': to_decimal_exact(row[prev_col])
             })
     return pd.DataFrame(processed)
+
+def extract_from_txt_bytes(txt_file, state):
+    processed = []
+    col_prefix = f"Txt_{state.capitalize()}_"
+    
+    # Pattern: Line starts with 3 digits followed by a description [cite: 6, 12, 32]
+    line_pattern = re.compile(r'^\s*(\d{3})\b')
+    # Pattern for monetary values (including negatives) [cite: 57]
+    num_pattern = r'-?\d+\.\d{2}'
+
+    # Read content from the file-like object
+    content = txt_file.read().decode('utf-8')
+    
+    for line in content.split('\n'):
+        line = line.strip()
+        if not line: continue
+            
+        match = line_pattern.match(line)
+        if match:
+            code = match.group(1)
+            
+            # Find all currency amounts in the line [cite: 7, 10, 13]
+            amounts = re.findall(num_pattern, line)
+            
+            # Most TXT balance sheets list Current Year then Previous Year [cite: 3, 4, 62, 63]
+            if len(amounts) >= 2:
+                processed.append({
+                    'Code': code,
+                    f'{col_prefix}Current': to_decimal_exact(amounts[-2]),
+                    f'{col_prefix}Previous': to_decimal_exact(amounts[-1])
+                })
+                    
+    return pd.DataFrame(processed)
+
+
+
+
 
 # --- GOOGLE DRIVE INTEGRATION ---
 
@@ -143,21 +177,25 @@ if FOLDER_ID:
             col1, col2 = st.columns(2)
             
             with col1:
-                type1 = st.selectbox("File Type 1", ["Excel", "PDF"], key="type1")
+                type1 = st.selectbox("File Type (Purohisab 2.0)", ["Excel"], key="type1")
                 filtered1 = []
                 if type1 == "Excel":
                     filtered1 = [f for f in files if f['name'].lower().endswith(('.xlsx', '.xls'))]
-                elif type1 == "PDF":
-                    filtered1 = [f for f in files if f['name'].lower().endswith('.pdf')]
+                # elif type1 == "PDF":
+                #     filtered1 = [f for f in files if f['name'].lower().endswith('.pdf')]
                 file1_info = st.selectbox("Select First File", filtered1, format_func=lambda x: x['name'], key="file1")
             
             with col2:
-                type2 = st.selectbox("File Type 2", ["Excel", "PDF"], key="type2")
+                type2 = st.selectbox("File Type (Old System)", ["Excel", "PDF", "CSV", "Txt"], key="type2")
                 filtered2 = []
                 if type2 == "Excel":
-                    filtered2 = [f for f in files if f['name'].lower().endswith(('.xlsx', '.xls'))]
+                    filtered2 = [f for f in files if f['name'].lower().endswith(('.xlsx', '.xls',))]
                 elif type2 == "PDF":
                     filtered2 = [f for f in files if f['name'].lower().endswith('.pdf')]
+                elif type2 == "CSV":
+                    filtered2 = [f for f in files if f['name'].lower().endswith('.csv')]
+                elif type2 == "Txt":
+                    filtered2 = [f for f in files if f['name'].lower().endswith('.txt')]
                 file2_info = st.selectbox("Select Second File", filtered2, format_func=lambda x: x['name'], key="file2")
 
             if st.button("Run Comparison"):
@@ -170,33 +208,57 @@ if FOLDER_ID:
                         # Check file types
                         file1_ext = file1_info['name'].lower().split('.')[-1]
                         file2_ext = file2_info['name'].lower().split('.')[-1]
-                        if (file1_ext in ['xlsx', 'xls'] and file2_ext == 'pdf') or (file1_ext == 'pdf' and file2_ext in ['xlsx', 'xls']):
-                            # Assign correctly
-                            if file1_ext in ['xlsx', 'xls']:
-                                excel_data = file1_data
-                                pdf_data = file2_data
-                            else:
-                                excel_data = file2_data
-                                pdf_data = file1_data
+                        if (file1_ext in ['xlsx', 'xls'] and file2_ext in ['pdf', 'xls', 'xlsx', 'csv', 'txt']):
+                            # Excel Files
+                            if file2_ext in ['xlsx', 'xls']:
+                                excel_data_new = file1_data
+                                excel_data_old = file2_data
+                                try:
+                                    df_new = extract_from_excel_bytes(excel_data_new, 'new')
+                                    df_old = extract_from_excel_bytes(excel_data_old, 'old')
+                                    # print("Excel Data:\n", df_new.head())
+                                    # print("Excel Data (Old):\n", df_old.head())
+                                except Exception as e:
+                                    st.error(f"Error processing files: {e}")
+                                    st.exception(e, width='stretch')
 
-                            # Process
-                            df_excel = extract_from_excel_bytes(excel_data)
-                            df_pdf = extract_from_pdf_bytes(pdf_data)
+                            # CSV Files
+                            elif(file2_ext in ['csv']):
+                                excel_data_new = file1_data
+                                csv_data_old = file2_data
 
-                            print(df_excel.head())
-                            print(df_pdf.head())
+
+                            # TXT Files
+                            elif(file2_ext in ['txt']):
+                                excel_data_new = file1_data
+                                txt_data_old = file2_data
+
+                            # PDF Files
+                            elif(file2_ext in ['pdf']):
+                                excel_data_new = file1_data
+                                pdf_data_old = file2_data
+                                try:
+                                # Process
+                                    df_new = extract_from_excel_bytes(excel_data_new, 'new')
+                                    df_old = extract_from_pdf_bytes(pdf_data_old, 'old')
+                                    print("Excel Data:\n", df_new.head())
+                                    print("PDF Data:\n", df_old.head())
+                                except Exception as e:
+                                    st.error(f"Error processing files: {e}")
+                                    st.exception(e, width='stretch')
+   
 
                            # Align and Compare
-                            comparison = pd.merge(df_excel, df_pdf, on='Code', how='outer').fillna(Decimal('0.00'))
-                            comparison['Current_Match'] = comparison['Excel_Current'] == comparison['PDF_Current']
-                            comparison['Previous_Match'] = comparison['Excel_Previous'] == comparison['PDF_Previous']
+                            comparison = pd.merge(df_new, df_old, on='Code', how='outer').fillna(Decimal('0.00'))
+                            comparison['Current_Match'] = comparison['new_Current'] == comparison['old_Current']
+                            comparison['Previous_Match'] = comparison['new_Previous'] == comparison['old_Previous']
                             comparison['Status'] = (comparison['Current_Match'] & comparison['Previous_Match']).map({True: '✅ MATCH', False: '❌ MISMATCH'})
 
                             # Display results
                             st.subheader("Comparison Result")
                             st.dataframe(comparison.style.map(
                                 lambda x: 'background-color: #ffcccc' if x == '❌ MISMATCH' else '', subset=['Status']
-                            ), use_container_width=True)
+                            ), width='stretch')
 
                             # Download Report
                             output = io.BytesIO()
@@ -237,5 +299,6 @@ if FOLDER_ID:
 
     except Exception as e:
         st.error(f"Error connecting to Google Drive: {e}")
+        st.exception(e, width='stretch')
 else:
     st.info("Please enter a Google Drive Folder ID in the sidebar to begin.")
