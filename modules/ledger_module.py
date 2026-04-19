@@ -6,8 +6,8 @@ import os
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 desired_acc_head = '3109001'
-start_date = '2012-04-01'
-end_date = '2013-03-31'
+# start_date = '2012-04-01'
+# end_date = '2013-03-31'
 
 # Extract the OpeningBalance seperately
 

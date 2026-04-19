@@ -132,6 +132,9 @@ def run_comparison(pdf_new, pdf_old):
     df_new = extract_from_pdf(pdf_new, state='new')
     df_old = extract_from_pdf(pdf_old, state='old')
 
+    print("New Data Extracted:\n", df_new)
+    print("Old Data Extracted:\n", df_old)
+
     # 2. Match on Code
     comparison = pd.merge(df_new, df_old, on=['date','vch_type', 'vch_no'], how='outer')
 
@@ -144,7 +147,7 @@ def run_comparison(pdf_new, pdf_old):
 
 
 # Filenames
-pdf_new = './Public/3109001_ledger_old_FY2013.pdf'
+pdf_new = './Public/3109001_ledger_new_FY2013.pdf'
 pdf_old = './Public/3109001_ledger_old_FY2013.pdf'
 
 

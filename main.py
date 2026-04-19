@@ -8,6 +8,10 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
+# Import audit modules
+from modules.ledger_audit import extract_from_pdf as ledger_extract, compare_ledgers
+from Features import trial, ledger as ledger_module
+
 
 # --- CORE LOGIC (From previous steps) ---
 
@@ -126,34 +130,34 @@ def extract_from_txt_bytes(txt_file, state):
 # --- GOOGLE DRIVE INTEGRATION ---
 
 
-# def get_gdrive_service():
-#     # 1. First, try to load from Streamlit Cloud Secrets (Production)
-#     if "gcp_service_account" in st.secrets:
-#         # We convert the secrets back into a dictionary format the library understands
-#         service_account_info = dict(st.secrets["gcp_service_account"])
-#         # We need to fix the newline characters in the private key if they got mangled
-#         service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
-        
-#         creds = service_account.Credentials.from_service_account_info(
-#             service_account_info, 
-#             scopes=['https://www.googleapis.com/auth/drive.readonly']
-#         )
-
-#     return build('drive', 'v3', credentials=creds)
-
-
 def get_gdrive_service():
-        # For Local Development: Use service_account.json
-    import os
-    if os.path.exists('service_account.json'):
-        creds = service_account.Credentials.from_service_account_file(
-            'service_account.json', 
+    # 1. First, try to load from Streamlit Cloud Secrets (Production)
+    if "gcp_service_account" in st.secrets:
+        # We convert the secrets back into a dictionary format the library understands
+        service_account_info = dict(st.secrets["gcp_service_account"])
+        # We need to fix the newline characters in the private key if they got mangled
+        service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
+        
+        creds = service_account.Credentials.from_service_account_info(
+            service_account_info, 
             scopes=['https://www.googleapis.com/auth/drive.readonly']
         )
-    else:
-        raise FileNotFoundError("Could not find service_account.json file.")
-    
+
     return build('drive', 'v3', credentials=creds)
+
+
+# def get_gdrive_service():
+#         # For Local Development: Use service_account.json
+#     import os
+#     if os.path.exists('service_account.json'):
+#         creds = service_account.Credentials.from_service_account_file(
+#             'service_account.json', 
+#             scopes=['https://www.googleapis.com/auth/drive.readonly']
+#         )
+#     else:
+#         raise FileNotFoundError("Could not find service_account.json file.")
+    
+#     return build('drive', 'v3', credentials=creds)
 
 def list_files_in_folder(service, folder_id):
     query = f"'{folder_id}' in parents and trashed = false"
@@ -172,7 +176,7 @@ def download_file(service, file_id):
 
 # --- STREAMLIT UI ---
 
-st.set_page_config(page_title="Auditor", layout="wide")
+st.set_page_config(page_title="Testly", layout="wide")
 st.title("📊 Report Auditor")
 
 # Feature selection
@@ -182,6 +186,7 @@ feature = st.selectbox("Select Feature", ["Balance Sheet Audit", "Trial Balance 
 FOLDER_ID = st.sidebar.text_input("Google Drive Folder ID")
 
 if FOLDER_ID:
+
     try:
         drive_service = get_gdrive_service()
         files = list_files_in_folder(drive_service, FOLDER_ID)
@@ -192,12 +197,12 @@ if FOLDER_ID:
             col1, col2 = st.columns(2)
             
             with col1:
-                type1 = st.selectbox("File Type (Purohisab 2.0)", ["Excel"], key="type1")
+                type1 = st.selectbox("File Type (Purohisab 2.0)", ["Excel"] if feature == "Balance Sheet Audit" else ["Excel", "PDF"], key="type1")
                 filtered1 = []
                 if type1 == "Excel":
                     filtered1 = [f for f in files if f['name'].lower().endswith(('.xlsx', '.xls'))]
-                # elif type1 == "PDF":
-                #     filtered1 = [f for f in files if f['name'].lower().endswith('.pdf')]
+                elif type1 == "PDF":
+                    filtered1 = [f for f in files if f['name'].lower().endswith('.pdf')]
                 file1_info = st.selectbox("Select First File", filtered1, format_func=lambda x: x['name'], key="file1")
             
             with col2:
@@ -212,6 +217,16 @@ if FOLDER_ID:
                 elif type2 == "Txt":
                     filtered2 = [f for f in files if f['name'].lower().endswith('.txt')]
                 file2_info = st.selectbox("Select Second File", filtered2, format_func=lambda x: x['name'], key="file2")
+
+            # Show Ledger Audit parameters in sidebar when Ledger Audit is selected
+            if feature == "Ledger Audit":
+                st.sidebar.subheader("Ledger Audit Parameters")
+                ledger_code = st.sidebar.text_input(
+                    "Ledger Code",
+                    help="Enter ledger code to extract (e.g., 3109001)"
+                )
+            else:
+                ledger_code = None
 
             if st.button("Run Comparison"):
                 with st.spinner("Fetching files and analyzing..."):
@@ -312,18 +327,84 @@ if FOLDER_ID:
                         else:
                             st.error("For Trial Balance Audit, please select two PDF files.")
                     elif feature == "Ledger Audit":
-                        # Assume extract from PDF
-                        pdf_data = None
-                        if type1 == "PDF":
-                            pdf_data = file1_data
-                        elif type2 == "PDF":
-                            pdf_data = file2_data
-                        if pdf_data is None:
-                            st.error("Please select at least one PDF file for Ledger Audit.")
+                        # Ledger Audit requires two PDF files for comparison
+                        if type1 == "PDF" and type2 == "PDF":
+                            pdf_new_data = file1_data
+                            pdf_old_data = file2_data
+
+                            if not ledger_code:
+                                st.error("Please enter a Ledger Code in the sidebar.")
+                            else:
+                                with st.spinner("Extracting ledger entries from PDFs..."):
+                                    try:
+                                        df_old = ledger_extract(
+                                            pdf_old_data, state='old',
+                                            desired_acc_head=ledger_code
+                                        )
+                                        df_new = ledger_extract(
+                                            pdf_new_data, state='new',
+                                            desired_acc_head=ledger_code
+                                        )
+                                    except Exception as e:
+                                        st.error(f"Error extracting ledger data: {e}")
+                                        df_old, df_new = None, None
+
+                                if df_old is None or df_new is None:
+                                    pass
+                                elif df_old.empty and df_new.empty:
+                                    st.warning("No ledger entries found. Check the ledger code or PDF format.")
+                                elif df_old.empty:
+                                    st.warning("No ledger entries found in the old PDF. Only new entries shown.")
+                                    comparison = df_new.copy()
+                                    comparison['Status'] = '✅ NEW ONLY'
+                                    st.subheader("Ledger Entries (New)")
+                                    st.dataframe(comparison, width = 'stretch')
+                                elif df_new.empty:
+                                    st.warning("No ledger entries found in the new PDF. Only old entries shown.")
+                                    comparison = df_old.copy()
+                                    comparison['Status'] = '✅ OLD ONLY'
+                                    st.subheader("Ledger Entries (Old)")
+                                    st.dataframe(comparison, width = 'stretch')
+                                else:
+                                    # Compare ledgers
+                                    try:
+                                        comparison = compare_ledgers(df_new, df_old)
+                                    except Exception as e:
+                                        st.error(f"Error comparing ledgers: {e}")
+                                        st.write("New DF columns:", list(df_new.columns))
+                                        st.write("Old DF columns:", list(df_old.columns))
+                                        st.stop()
+
+                                    st.subheader("Ledger Comparison Result")
+                                    st.dataframe(
+                                        comparison.style.map(
+                                            lambda x: 'background-color: #ffcccc' if x == '❌ MISMATCH' else '',
+                                            subset=['Status']
+                                        ),
+                                        width = 'stretch'
+                                    )
+
+                                    # Summary stats
+                                    col1, col2, col3 = st.columns(3)
+                                    total_entries = len(comparison)
+                                    matched = len(comparison[comparison['Status'] == '✅ MATCH'])
+                                    mismatched = len(comparison[comparison['Status'] == '❌ MISMATCH'])
+                                    col1.metric("Total Entries", total_entries)
+                                    col2.metric("Matched", matched)
+                                    col3.metric("Mismatched", mismatched, delta=f"{mismatched/total_entries*100:.1f}%" if total_entries > 0 else "0%")
+
+                                    # Download Report
+                                    output = io.BytesIO()
+                                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                        comparison.to_excel(writer, index=False)
+                                    st.download_button(
+                                        label="Download Ledger Comparison Report",
+                                        data=output.getvalue(),
+                                        file_name="Ledger_Comparison_Report.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    )
                         else:
-                            df = ledger.extract_from_pdf(pdf_data)
-                            st.subheader("Ledger Entries")
-                            st.dataframe(df)
+                            st.error("For Ledger Audit, please select two PDF files.")
 
     except Exception as e:
         st.error(f"Error occuring: {e}")
