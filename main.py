@@ -46,14 +46,30 @@ def extract_from_pdf_bytes(pdf_file,state):
                         })
     return pd.DataFrame(data)
 
-def extract_from_excel_bytes(excel_file, state ):
-    df_raw = pd.read_excel(excel_file)
+def extract_from_excel_bytes(file, state, type = 'excel' ):
+    df_raw = df = None
+    if(type == 'excel'):
+        if hasattr(file, 'seek'):
+            file.seek(0)
+        df_raw = pd.read_excel(file)
+    elif(type == 'csv'):
+        if hasattr(file, 'seek'):
+            file.seek(0)
+        df_raw = pd.read_csv(file)
+    print("Type of file being processed: ", type)
     header_idx = None
     for i, row in df_raw.iterrows():
         if row.astype(str).str.contains('Code No', case=False).any():
             header_idx = i
             break
-    df = pd.read_excel(excel_file, skiprows=header_idx + 1) if header_idx is not None else df_raw
+        
+    if header_idx is None:
+        st.warning("Could not find header row with 'Code No'. Processing entire file, which may lead to errors.")
+        df = df_raw
+    else:
+        if hasattr(file, 'seek'):
+            file.seek(0)
+        df = pd.read_excel(file, skiprows=header_idx + 1) if type == 'excel' else pd.read_csv(file, skiprows=header_idx + 1)
     
     cols = df.columns
     code_col = next((c for c in cols if 'Code' in str(c)), None)
@@ -73,7 +89,6 @@ def extract_from_excel_bytes(excel_file, state ):
 
 def extract_from_txt_bytes(txt_file, state):
     processed = []
-    col_prefix = f"Txt_{state.capitalize()}_"
     
     # Pattern: Line starts with 3 digits followed by a description [cite: 6, 12, 32]
     line_pattern = re.compile(r'^\s*(\d{3})\b')
@@ -98,8 +113,8 @@ def extract_from_txt_bytes(txt_file, state):
             if len(amounts) >= 2:
                 processed.append({
                     'Code': code,
-                    f'{col_prefix}Current': to_decimal_exact(amounts[-2]),
-                    f'{col_prefix}Previous': to_decimal_exact(amounts[-1])
+                    f'{state}_Current': to_decimal_exact(amounts[-2]),
+                    f'{state}_Previous': to_decimal_exact(amounts[-1])
                 })
                     
     return pd.DataFrame(processed)
@@ -216,8 +231,6 @@ if FOLDER_ID:
                                 try:
                                     df_new = extract_from_excel_bytes(excel_data_new, 'new')
                                     df_old = extract_from_excel_bytes(excel_data_old, 'old')
-                                    # print("Excel Data:\n", df_new.head())
-                                    # print("Excel Data (Old):\n", df_old.head())
                                 except Exception as e:
                                     st.error(f"Error processing files: {e}")
                                     st.exception(e, width='stretch')
@@ -226,12 +239,29 @@ if FOLDER_ID:
                             elif(file2_ext in ['csv']):
                                 excel_data_new = file1_data
                                 csv_data_old = file2_data
+                                try:
+                                    df_new = extract_from_excel_bytes(excel_data_new, 'new')
+                                    df_old = extract_from_excel_bytes(csv_data_old, 'old', 'csv')
+                                    print(" old data",df_old.head())
+                                    print(" new data",df_new.head())
+                                except Exception as e:
+                                    st.error(f"Error processing files: {e}")
+                                    st.exception(e, width='stretch')
+
 
 
                             # TXT Files
                             elif(file2_ext in ['txt']):
                                 excel_data_new = file1_data
                                 txt_data_old = file2_data
+                                try:
+                                        df_new = extract_from_excel_bytes(excel_data_new, 'new')
+                                        df_old = extract_from_txt_bytes(txt_data_old, 'old')
+                                except Exception as e:
+                                        st.error(f"Error processing files: {e}")
+                                        st.exception(e, width='stretch')
+
+
 
                             # PDF Files
                             elif(file2_ext in ['pdf']):
@@ -241,8 +271,6 @@ if FOLDER_ID:
                                 # Process
                                     df_new = extract_from_excel_bytes(excel_data_new, 'new')
                                     df_old = extract_from_pdf_bytes(pdf_data_old, 'old')
-                                    print("Excel Data:\n", df_new.head())
-                                    print("PDF Data:\n", df_old.head())
                                 except Exception as e:
                                     st.error(f"Error processing files: {e}")
                                     st.exception(e, width='stretch')
@@ -298,7 +326,7 @@ if FOLDER_ID:
                             st.dataframe(df)
 
     except Exception as e:
-        st.error(f"Error connecting to Google Drive: {e}")
+        st.error(f"Error occuring: {e}")
         st.exception(e, width='stretch')
 else:
     st.info("Please enter a Google Drive Folder ID in the sidebar to begin.")
