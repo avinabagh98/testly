@@ -11,6 +11,7 @@ from googleapiclient.http import MediaIoBaseDownload
 # Import audit modules
 from modules.ledger_audit import extract_from_pdf as ledger_extract, compare_ledgers
 from Features import trial, ledger as ledger_module
+from modules.html2pdf import convert_html_to_pdf
 
 
 # --- CORE LOGIC (From previous steps) ---
@@ -179,8 +180,12 @@ def download_file(service, file_id):
 st.set_page_config(page_title="Testly", layout="wide")
 st.title("📊 Report Auditor")
 
+# Session state for tracking converted files
+if 'converted_files' not in st.session_state:
+    st.session_state.converted_files = []
+
 # Feature selection
-feature = st.selectbox("Select Feature", ["Balance Sheet Audit", "Trial Balance Audit", "Ledger Audit"])
+feature = st.selectbox("Select Feature", ["Balance Sheet Audit", "Trial Balance Audit", "Ledger Audit", "HTML to PDF"])
 
 # Folder ID input (or hardcode it)
 FOLDER_ID = st.sidebar.text_input("Google Drive Folder ID")
@@ -194,217 +199,256 @@ if FOLDER_ID:
         if not files:
             st.warning("No files found in this folder.")
         else:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                type1 = st.selectbox("File Type (Purohisab 2.0)", ["Excel"] if feature == "Balance Sheet Audit" else ["Excel", "PDF"], key="type1")
-                filtered1 = []
-                if type1 == "Excel":
-                    filtered1 = [f for f in files if f['name'].lower().endswith(('.xlsx', '.xls'))]
-                elif type1 == "PDF":
-                    filtered1 = [f for f in files if f['name'].lower().endswith('.pdf')]
-                file1_info = st.selectbox("Select First File", filtered1, format_func=lambda x: x['name'], key="file1")
-            
-            with col2:
-                type2 = st.selectbox("File Type (Old System)", ["Excel", "PDF", "CSV", "Txt"], key="type2")
-                filtered2 = []
-                if type2 == "Excel":
-                    filtered2 = [f for f in files if f['name'].lower().endswith(('.xlsx', '.xls',))]
-                elif type2 == "PDF":
-                    filtered2 = [f for f in files if f['name'].lower().endswith('.pdf')]
-                elif type2 == "CSV":
-                    filtered2 = [f for f in files if f['name'].lower().endswith('.csv')]
-                elif type2 == "Txt":
-                    filtered2 = [f for f in files if f['name'].lower().endswith('.txt')]
-                file2_info = st.selectbox("Select Second File", filtered2, format_func=lambda x: x['name'], key="file2")
+            # HTML to PDF feature - single file selection
+            if feature == "HTML to PDF":
+                html_files = [f for f in files if f['name'].lower().endswith(('.html', '.htm'))]
+                if not html_files:
+                    st.warning("No HTML files found in this folder.")
+                else:
+                    selected_html = st.selectbox("Select HTML File", html_files, format_func=lambda x: x['name'])
 
-            # Show Ledger Audit parameters in sidebar when Ledger Audit is selected
-            if feature == "Ledger Audit":
-                st.sidebar.subheader("Ledger Audit Parameters")
-                ledger_code = st.sidebar.text_input(
-                    "Ledger Code",
-                    help="Enter ledger code to extract (e.g., 3109001)"
-                )
+                    # Display converted files history
+                    if st.session_state.converted_files:
+                        st.sidebar.subheader("Recently Converted Files")
+                        for fname in reversed(st.session_state.converted_files[-10:]):
+                            st.sidebar.text(fname)
+
+                    if st.button("Convert to PDF"):
+                        with st.spinner("Converting HTML to PDF..."):
+                            try:
+                                html_data = download_file(drive_service, selected_html['id'])
+                                pdf_bytes = convert_html_to_pdf(html_data, selected_html['name'])
+
+                                # Add to converted files list
+                                st.session_state.converted_files.append(
+                                    f"{selected_html['name']} -> Generated{selected_html['name'].rsplit('.', 1)[0]}.pdf"
+                                )
+
+                                # Download button
+                                st.download_button(
+                                    label="Download PDF",
+                                    data=pdf_bytes,
+                                    file_name='Generated ' + selected_html['name'].rsplit('.', 1)[0] + '.pdf',
+                                    mime="application/pdf"
+                                )
+                                st.success(f"Converted: {selected_html['name']}")
+                            except Exception as e:
+                                st.warning(f"Error converting HTML to PDF: {e}")
             else:
-                ledger_code = None
+                # Other features - two file selection
+                col1, col2 = st.columns(2)
 
-            if st.button("Run Comparison"):
-                with st.spinner("Fetching files and analyzing..."):
-                    # Download files into memory
-                    file1_data = download_file(drive_service, file1_info['id'])
-                    file2_data = download_file(drive_service, file2_info['id'])
+                with col1:
+                    type1 = st.selectbox("File Type (Purohisab 2.0)", ["Excel"] if feature == "Balance Sheet Audit" else ["Excel", "PDF"], key="type1")
+                    filtered1 = []
+                    if type1 == "Excel":
+                        filtered1 = [f for f in files if f['name'].lower().endswith(('.xlsx', '.xls'))]
+                    elif type1 == "PDF":
+                        filtered1 = [f for f in files if f['name'].lower().endswith('.pdf')]
+                    file1_info = st.selectbox("Select First File", filtered1, format_func=lambda x: x['name'], key="file1")
 
-                    if feature == "Balance Sheet Audit":
-                        # Check file types
-                        file1_ext = file1_info['name'].lower().split('.')[-1]
-                        file2_ext = file2_info['name'].lower().split('.')[-1]
-                        if (file1_ext in ['xlsx', 'xls'] and file2_ext in ['pdf', 'xls', 'xlsx', 'csv', 'txt']):
-                            # Excel Files
-                            if file2_ext in ['xlsx', 'xls']:
-                                excel_data_new = file1_data
-                                excel_data_old = file2_data
-                                try:
-                                    df_new = extract_from_excel_bytes(excel_data_new, 'new')
-                                    df_old = extract_from_excel_bytes(excel_data_old, 'old')
-                                except Exception as e:
-                                    st.error(f"Error processing files: {e}")
-                                    st.exception(e, width='stretch')
+                with col2:
+                    type2 = st.selectbox("File Type (Old System)", ["Excel", "PDF", "CSV", "Txt"], key="type2")
+                    filtered2 = []
+                    if type2 == "Excel":
+                        filtered2 = [f for f in files if f['name'].lower().endswith(('.xlsx', '.xls',))]
+                    elif type2 == "PDF":
+                        filtered2 = [f for f in files if f['name'].lower().endswith('.pdf')]
+                    elif type2 == "CSV":
+                        filtered2 = [f for f in files if f['name'].lower().endswith('.csv')]
+                    elif type2 == "Txt":
+                        filtered2 = [f for f in files if f['name'].lower().endswith('.txt')]
+                    file2_info = st.selectbox("Select Second File", filtered2, format_func=lambda x: x['name'], key="file2")
 
-                            # CSV Files
-                            elif(file2_ext in ['csv']):
-                                excel_data_new = file1_data
-                                csv_data_old = file2_data
-                                try:
-                                    df_new = extract_from_excel_bytes(excel_data_new, 'new')
-                                    df_old = extract_from_excel_bytes(csv_data_old, 'old', 'csv')
-                                    print(" old data",df_old.head())
-                                    print(" new data",df_new.head())
-                                except Exception as e:
-                                    st.error(f"Error processing files: {e}")
-                                    st.exception(e, width='stretch')
+                # Show Ledger Audit parameters in sidebar when Ledger Audit is selected
+                if feature == "Ledger Audit":
+                    st.sidebar.subheader("Ledger Audit Parameters")
+                    ledger_code = st.sidebar.text_input(
+                        "Ledger Code",
+                        help="Enter ledger code to extract (e.g., 3109001)"
+                    )
+                else:
+                    ledger_code = None
 
+                if st.button("Run Comparison"):
+                    with st.spinner("Fetching files and analyzing..."):
+                        # Download files into memory
+                        file1_data = download_file(drive_service, file1_info['id'])
+                        file2_data = download_file(drive_service, file2_info['id'])
 
-
-                            # TXT Files
-                            elif(file2_ext in ['txt']):
-                                excel_data_new = file1_data
-                                txt_data_old = file2_data
-                                try:
+                        if feature == "Balance Sheet Audit":
+                            # Check file types
+                            file1_ext = file1_info['name'].lower().split('.')[-1]
+                            file2_ext = file2_info['name'].lower().split('.')[-1]
+                            if (file1_ext in ['xlsx', 'xls'] and file2_ext in ['pdf', 'xls', 'xlsx', 'csv', 'txt']):
+                                # Excel Files
+                                if file2_ext in ['xlsx', 'xls']:
+                                    excel_data_new = file1_data
+                                    excel_data_old = file2_data
+                                    try:
                                         df_new = extract_from_excel_bytes(excel_data_new, 'new')
-                                        df_old = extract_from_txt_bytes(txt_data_old, 'old')
-                                except Exception as e:
+                                        df_old = extract_from_excel_bytes(excel_data_old, 'old')
+                                    except Exception as e:
+                                        st.error(f"Error processing files: {e}")
+                                        st.exception(e, width='stretch')
+
+                                # CSV Files
+                                elif(file2_ext in ['csv']):
+                                    excel_data_new = file1_data
+                                    csv_data_old = file2_data
+                                    try:
+                                        df_new = extract_from_excel_bytes(excel_data_new, 'new')
+                                        df_old = extract_from_excel_bytes(csv_data_old, 'old', 'csv')
+                                        print(" old data",df_old.head())
+                                        print(" new data",df_new.head())
+                                    except Exception as e:
                                         st.error(f"Error processing files: {e}")
                                         st.exception(e, width='stretch')
 
 
 
-                            # PDF Files
-                            elif(file2_ext in ['pdf']):
-                                excel_data_new = file1_data
-                                pdf_data_old = file2_data
-                                try:
-                                # Process
-                                    df_new = extract_from_excel_bytes(excel_data_new, 'new')
-                                    df_old = extract_from_pdf_bytes(pdf_data_old, 'old')
-                                except Exception as e:
-                                    st.error(f"Error processing files: {e}")
-                                    st.exception(e, width='stretch')
-   
+                                # TXT Files
+                                elif(file2_ext in ['txt']):
+                                    excel_data_new = file1_data
+                                    txt_data_old = file2_data
+                                    try:
+                                            df_new = extract_from_excel_bytes(excel_data_new, 'new')
+                                            df_old = extract_from_txt_bytes(txt_data_old, 'old')
+                                    except Exception as e:
+                                            st.error(f"Error processing files: {e}")
+                                            st.exception(e, width='stretch')
 
-                           # Align and Compare
-                            comparison = pd.merge(df_new, df_old, on='Code', how='outer').fillna(Decimal('0.00'))
-                            comparison['Current_Match'] = comparison['new_Current'] == comparison['old_Current']
-                            comparison['Previous_Match'] = comparison['new_Previous'] == comparison['old_Previous']
-                            comparison['Status'] = (comparison['Current_Match'] & comparison['Previous_Match']).map({True: '✅ MATCH', False: '❌ MISMATCH'})
 
-                            # Display results
-                            st.subheader("Comparison Result")
-                            st.dataframe(comparison.style.map(
-                                lambda x: 'background-color: #ffcccc' if x == '❌ MISMATCH' else '', subset=['Status']
-                            ), width='stretch')
 
-                            # Download Report
-                            output = io.BytesIO()
-                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                                comparison.to_excel(writer, index=False)
-                            st.download_button(
-                                label="Download Excel Report",
-                                data=output.getvalue(),
-                                file_name="BS_Comparison_Report.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                        else:
-                            st.error("For Balance Sheet Audit, please select one Excel file and one PDF file.")
-                    elif feature == "Trial Balance Audit":
-                        # Assume file1 is old, file2 is new
-                        if type1 == "PDF" and type2 == "PDF":
-                            df_old = trial.extract_from_pdf(file1_data, 'old')
-                            df_new = trial.extract_from_pdf(file2_data, 'new')
-                            comparison = pd.merge(df_old, df_new, on='Code', how='outer').fillna(Decimal('0.00'))
-                            # Add match columns if needed, but for now display
-                            st.subheader("Trial Balance Comparison")
-                            st.dataframe(comparison)
-                        else:
-                            st.error("For Trial Balance Audit, please select two PDF files.")
-                    elif feature == "Ledger Audit":
-                        # Ledger Audit requires two PDF files for comparison
-                        if type1 == "PDF" and type2 == "PDF":
-                            pdf_new_data = file1_data
-                            pdf_old_data = file2_data
+                                # PDF Files
+                                elif(file2_ext in ['pdf']):
+                                    excel_data_new = file1_data
+                                    pdf_data_old = file2_data
+                                    try:
+                                    # Process
+                                        df_new = extract_from_excel_bytes(excel_data_new, 'new')
+                                        df_old = extract_from_pdf_bytes(pdf_data_old, 'old')
+                                    except Exception as e:
+                                        st.error(f"Error processing files: {e}")
+                                        st.exception(e, width='stretch')
+    
 
-                            if not ledger_code:
-                                st.error("Please enter a Ledger Code in the sidebar.")
+                            # Align and Compare
+                                comparison = pd.merge(df_new, df_old, on='Code', how='outer').fillna(Decimal('0.00'))
+                                comparison['Current_Match'] = comparison['new_Current'] == comparison['old_Current']
+                                comparison['Previous_Match'] = comparison['new_Previous'] == comparison['old_Previous']
+                                comparison['Status'] = (comparison['Current_Match'] & comparison['Previous_Match']).map({True: '✅ MATCH', False: '❌ MISMATCH'})
+
+                                # Display results
+                                st.subheader("Comparison Result")
+                                st.dataframe(comparison.style.map(
+                                    lambda x: 'background-color: #ffcccc' if x == '❌ MISMATCH' else '', subset=['Status']
+                                ), width='stretch')
+
+                                # Download Report
+                                output = io.BytesIO()
+                                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                    comparison.to_excel(writer, index=False)
+                                st.download_button(
+                                    label="Download Excel Report",
+                                    data=output.getvalue(),
+                                    file_name="BS_Comparison_Report.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
                             else:
-                                with st.spinner("Extracting ledger entries from PDFs..."):
-                                    try:
-                                        df_old = ledger_extract(
-                                            pdf_old_data, state='old',
-                                            desired_acc_head=ledger_code
-                                        )
-                                        df_new = ledger_extract(
-                                            pdf_new_data, state='new',
-                                            desired_acc_head=ledger_code
-                                        )
-                                    except Exception as e:
-                                        st.error(f"Error extracting ledger data: {e}")
-                                        df_old, df_new = None, None
+                                st.error("For Balance Sheet Audit, please select one Excel file and one PDF file.")
+                        elif feature == "Trial Balance Audit":
+                            # Assume file1 is old, file2 is new
+                            if type1 == "PDF" and type2 == "PDF":
+                                df_old = trial.extract_from_pdf(file1_data, 'old')
+                                df_new = trial.extract_from_pdf(file2_data, 'new')
+                                comparison = pd.merge(df_old, df_new, on='Code', how='outer').fillna(Decimal('0.00'))
+                                # Add match columns if needed, but for now display
+                                st.subheader("Trial Balance Comparison")
+                                st.dataframe(comparison)
+                            else:
+                                st.error("For Trial Balance Audit, please select two PDF files.")
+                        elif feature == "Ledger Audit":
+                            # Ledger Audit requires two PDF files for comparison
+                            if type1 == "PDF" and type2 == "PDF":
+                                pdf_new_data = file1_data
+                                pdf_old_data = file2_data
 
-                                if df_old is None or df_new is None:
-                                    pass
-                                elif df_old.empty and df_new.empty:
-                                    st.warning("No ledger entries found. Check the ledger code or PDF format.")
-                                elif df_old.empty:
-                                    st.warning("No ledger entries found in the old PDF. Only new entries shown.")
-                                    comparison = df_new.copy()
-                                    comparison['Status'] = '✅ NEW ONLY'
-                                    st.subheader("Ledger Entries (New)")
-                                    st.dataframe(comparison, width = 'stretch')
-                                elif df_new.empty:
-                                    st.warning("No ledger entries found in the new PDF. Only old entries shown.")
-                                    comparison = df_old.copy()
-                                    comparison['Status'] = '✅ OLD ONLY'
-                                    st.subheader("Ledger Entries (Old)")
-                                    st.dataframe(comparison, width = 'stretch')
+                                if not ledger_code:
+                                    st.error("Please enter a Ledger Code in the sidebar.")
                                 else:
-                                    # Compare ledgers
-                                    try:
-                                        comparison = compare_ledgers(df_new, df_old)
-                                    except Exception as e:
-                                        st.error(f"Error comparing ledgers: {e}")
-                                        st.write("New DF columns:", list(df_new.columns))
-                                        st.write("Old DF columns:", list(df_old.columns))
-                                        st.stop()
+                                    with st.spinner("Extracting ledger entries from PDFs..."):
+                                        try:
+                                            df_old = ledger_extract(
+                                                pdf_old_data, state='old',
+                                                desired_acc_head=ledger_code
+                                            )
+                                            df_new = ledger_extract(
+                                                pdf_new_data, state='new',
+                                                desired_acc_head=ledger_code
+                                            )
+                                            print("New Ledger Data:\n", df_new.head())
+                                        except Exception as e:
+                                            st.error(f"Error extracting ledger data: {e}")
+                                            df_old, df_new = None, None
 
-                                    st.subheader("Ledger Comparison Result")
-                                    st.dataframe(
-                                        comparison.style.map(
-                                            lambda x: 'background-color: #ffcccc' if x == '❌ MISMATCH' else '',
-                                            subset=['Status']
-                                        ),
-                                        width = 'stretch'
-                                    )
+                                    if df_old is None or df_new is None:
+                                        pass
+                                    elif df_old.empty and df_new.empty:
+                                        st.warning("No ledger entries found. Check the ledger code or PDF format.")
+                                    elif df_old.empty:
+                                        st.warning("No ledger entries found in the old PDF. Only new entries shown.")
+                                        comparison = df_new.copy()
+                                        comparison['Status'] = '✅ NEW ONLY'
+                                        st.subheader("Ledger Entries (New)")
+                                        st.dataframe(comparison, width = 'stretch')
+                                    elif df_new.empty:
+                                        st.warning("No ledger entries found in the new PDF. Only old entries shown.")
+                                        comparison = df_old.copy()
+                                        comparison['Status'] = '✅ OLD ONLY'
+                                        st.subheader("Ledger Entries (Old)")
+                                        st.dataframe(comparison, width = 'stretch')
+                                    else:
+                                        # Compare ledgers
+                                        try:
+                                            comparison = compare_ledgers(df_new, df_old)
+                                        except Exception as e:
+                                            st.error(f"Error comparing ledgers: {e}")
+                                            st.write("New DF columns:", list(df_new.columns))
+                                            st.write("Old DF columns:", list(df_old.columns))
+                                            st.stop()
 
-                                    # Summary stats
-                                    col1, col2, col3 = st.columns(3)
-                                    total_entries = len(comparison)
-                                    matched = len(comparison[comparison['Status'] == '✅ MATCH'])
-                                    mismatched = len(comparison[comparison['Status'] == '❌ MISMATCH'])
-                                    col1.metric("Total Entries", total_entries)
-                                    col2.metric("Matched", matched)
-                                    col3.metric("Mismatched", mismatched, delta=f"{mismatched/total_entries*100:.1f}%" if total_entries > 0 else "0%")
+                                        st.subheader("Ledger Comparison Result")
+                                        st.dataframe(
+                                            comparison.style.map(
+                                                lambda x: 'background-color: #ffcccc' if x == '❌ MISMATCH' else '',
+                                                subset=['Status']
+                                            ),
+                                            width = 'stretch'
+                                        )
 
-                                    # Download Report
-                                    output = io.BytesIO()
-                                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                                        comparison.to_excel(writer, index=False)
-                                    st.download_button(
-                                        label="Download Ledger Comparison Report",
-                                        data=output.getvalue(),
-                                        file_name="Ledger_Comparison_Report.xlsx",
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                    )
-                        else:
-                            st.error("For Ledger Audit, please select two PDF files.")
+                                        # Summary stats
+                                        col1, col2, col3 = st.columns(3)
+                                        total_entries = len(comparison)
+                                        matched = len(comparison[comparison['Status'] == '✅ MATCH'])
+                                        mismatched = len(comparison[comparison['Status'] == '❌ MISMATCH'])
+                                        col1.metric("Total Entries", total_entries)
+                                        col2.metric("Matched", matched)
+                                        col3.metric("Mismatched", mismatched, delta=f"{mismatched/total_entries*100:.1f}%" if total_entries > 0 else "0%")
+
+                                        # Download Report
+                                        output = io.BytesIO()
+                                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                            comparison.to_excel(writer, index=False)
+                                        st.download_button(
+                                            label="Download Ledger Comparison Report",
+                                            data=output.getvalue(),
+                                            file_name="Ledger_Comparison_Report.xlsx",
+                                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                        )
+                            else:
+                                st.error("For Ledger Audit, please select two PDF files.")
+                
 
     except Exception as e:
         st.error(f"Error occuring: {e}")

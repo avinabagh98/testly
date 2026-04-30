@@ -34,6 +34,7 @@ def to_decimal_exact(val):
 
 
 def extract_from_pdf(pdf_file, state, desired_acc_head):
+
     """
     Extracts ledger entries from a PDF file for a specific ledger code.
 
@@ -67,6 +68,7 @@ def extract_from_pdf(pdf_file, state, desired_acc_head):
     )
 
     with pdfplumber.open(pdf_file) as pdf:
+
         for page in pdf.pages:
             text = page.extract_text()
             if not text:
@@ -79,23 +81,30 @@ def extract_from_pdf(pdf_file, state, desired_acc_head):
                 if not start_extract:
                     if ledger_code_pattern.search(line_stripped):
                         start_extract = True
+                        print(f"ledger code {line_stripped}" ) if state == 'new' else None
                     continue
 
                 # Stop at ledger name (end of voucher section)
                 if ledger_name_pattern.match(line_stripped):
+                    # print(f"ledger name {line_stripped}" )
                     return pd.DataFrame(data)
 
                 # Skip lines without date
                 if not date_pattern.search(line_stripped):
+                    # print(f"Skipping ::date not found {line_stripped}" )
                     continue
 
                 m = vch_pattern.search(line_stripped)
                 if not m:
+                    # print(f"Skipping ::voucher pattern not found {line_stripped}" )
                     continue
 
                 date_text = m.group(1)
                 vch_type = m.group(3)
                 vch_no = m.group(4)
+
+                if state == 'new':
+                    print(f"Extracted - Date: {date_text}, Voucher Type: {vch_type}, Voucher No: {vch_no}" )
 
                 # Remove voucher number from line to avoid matching it as amount
                 line_for_amounts = re.sub(rf'\b{re.escape(vch_no)}\b', ' ', line_stripped, count=1)
@@ -125,6 +134,8 @@ def extract_from_pdf(pdf_file, state, desired_acc_head):
                         'debit_new': debit,
                         'credit_new': credit,
                     })
+        start_extract = False  # Reset for next PDF if needed       
+
 
     return pd.DataFrame(data)
 
